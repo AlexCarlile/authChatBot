@@ -2,8 +2,9 @@ import telebot
 import sqlite3
 from datetime import datetime
 import time
-from flask import Flask, g
+from flask import Flask, g, request, send_file, render_template_string, abort, jsonify
 import re
+
 
 API_TOKEN = 'API_TOKEN'
 bot = telebot.TeleBot(API_TOKEN)
@@ -82,14 +83,17 @@ def get_db_users():
     db = getattr(g, '_database_users', None)
     if db is None:
         db = sqlite3.connect(DATABASE_USERS)
+        db.row_factory = sqlite3.Row
         g._database_users = db
-    return db
+    # return db
+    return g._database_users
 
 @app.teardown_appcontext
 def close_db_users(exception):
     db = g.pop('_database_users', None)
     if db is not None:
         db.close()
+        g._database_users = None
 
 def init_db():
     with app.app_context():
@@ -283,7 +287,6 @@ def process_email(message, full_spec):
         print(f"Введен некорректный e-mail: {email}")
         bot.send_message(message.chat.id, "Некорректный формат e-mail. Пожалуйста, введите действительный адрес электронной почты:")
         bot.register_next_step_handler(message, process_email)
-
 
 if __name__ == '__main__':
     init_db()  # Вызываем инициализацию базы данных
