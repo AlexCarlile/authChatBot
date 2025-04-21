@@ -4,6 +4,8 @@ from datetime import datetime
 import time
 from flask import Flask, g, request, send_file, render_template_string, abort, jsonify
 import re
+import requests
+import logging
 
 
 API_TOKEN = 'API_TOKEN'
@@ -11,6 +13,9 @@ bot = telebot.TeleBot(API_TOKEN)
 
 app = Flask(__name__)
 DATABASE_USERS = 'users.db'
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 CHAT_LINKS = {
     'endocrinology_yandex': 'https://t.me/+T5OMwwy6fvw5OTIy',
@@ -82,7 +87,7 @@ CHAT_LINKS = {
 def get_db_users():
     db = getattr(g, '_database_users', None)
     if db is None:
-        db = sqlite3.connect(DATABASE_USERS)
+        db = sqlite3.connect(DATABASE_USERS, timeout=10)
         db.row_factory = sqlite3.Row
         g._database_users = db
     # return db
@@ -188,7 +193,6 @@ def save_user(conn, full_name, email, username, specialization, channel):
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (full_name, email, username, specialization, channel, registration_date))
             conn.commit()
-            cursor.close()
             print(f"Данные пользователя {username} сохранены в базе: {full_name}, {email}, {specialization}, {channel}, {registration_date}.")
             break
         except sqlite3.OperationalError as e:
@@ -199,7 +203,8 @@ def save_user(conn, full_name, email, username, specialization, channel):
                 print(f"Ошибка при сохранении пользователя: {e}")
                 raise
         finally:
-            cursor.close()  # Закрываем курсор
+            if cursor:
+                cursor.close()  # Закрываем курсор
 
 def parse_specialization_and_channel(start_param):
     parts = start_param.split('_', 1)
@@ -208,10 +213,24 @@ def parse_specialization_and_channel(start_param):
     channel = parts[1] if len(parts) > 1 else 'unknown'
     return full_spec, specialization, channel
 
+def is_telegram_server_available():
+    try:
+        response = requests.get('https://api.telegram.org')
+        return response.status_code == 200
+    except requests.exceptions.RequestException as e:
+        print(f"Ошибка при проверке доступности сервера Telegram: {e}")
+        return False
+
 user_data = {}
 
 @bot.message_handler(commands=['start'])
 def start(message):
+    if not is_telegram_server_available():
+            bot.send_message(message.chat.id, "Сервер Telegram недоступен. Попробуйте позже.")
+            return  # Выход, если сервер недоступен
+    
+    logging.info(f"Пользователь {message.from_user.username} начал работу с ботом")
+
     start_params = message.text.split()
     if len(start_params) > 1:
         full_spec, specialization, channel = parse_specialization_and_channel(start_params[1])
@@ -219,7 +238,7 @@ def start(message):
         print('В specialization: ', specialization)
         print('В channel: ', channel)
         print(f"full_spec: '{full_spec}'")
-        print(f"CHAT_LINKS keys: {list(CHAT_LINKS.keys())}")
+        # print(f"CHAT_LINKS keys: {list(CHAT_LINKS.keys())}")
         print(f"Check direct match: {full_spec in CHAT_LINKS}")
         if full_spec in CHAT_LINKS:
             username = message.from_user.username
@@ -248,6 +267,10 @@ def start(message):
         bot.send_message(message.chat.id, "Пожалуйста, укажите специализацию в ссылке.")
 
 def process_full_name(message, full_spec):
+    if not is_telegram_server_available():
+            bot.send_message(message.chat.id, "Сервер Telegram недоступен. Попробуйте позже.")
+            return  # Выход, если сервер недоступен
+    
     full_name = message.text.strip()
     # Регулярное выражение для проверки корректности ФИО
     full_name_pattern = r'^[А-ЯЁ][а-яё]+(?: [А-ЯЁ][а-яё]+){1,2}$'
@@ -262,9 +285,13 @@ def process_full_name(message, full_spec):
         bot.send_message(message.chat.id, "Некорректный формат ФИО. Пожалуйста, введите полное имя в формате: Фамилия Имя Отчество.")
         bot.register_next_step_handler(message, lambda msg: process_full_name(msg, full_spec))
 
-email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+
 
 def process_email(message, full_spec):
+    if not is_telegram_server_available():
+            bot.send_message(message.chat.id, "Сервер Telegram недоступен. Попробуйте позже.")
+            return  # Выход, если сервер недоступен
+    
     email = message.text.strip()
     email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
     
@@ -286,9 +313,10 @@ def process_email(message, full_spec):
     else:
         print(f"Введен некорректный e-mail: {email}")
         bot.send_message(message.chat.id, "Некорректный формат e-mail. Пожалуйста, введите действительный адрес электронной почты:")
-        bot.register_next_step_handler(message, process_email)
+        bot.register_next_step_handler(message, lambda msg: process_email(msg, full_spec))
+
 
 if __name__ == '__main__':
     init_db()  # Вызываем инициализацию базы данных
     with app.app_context():  # Создаем контекст приложения
-        bot.polling()
+        bot.polling(none_stop=True, interval=0, timeout=60)
